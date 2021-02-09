@@ -1,0 +1,216 @@
+---
+title: "03_PISA"
+author: "Sara Bengoechea Rodriguez"
+date: "11/5/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{r libraries, include=FALSE}
+# Importación de librerías
+library(tidyverse)
+library(broom) # modelos en df
+library(flextable) # Tablas formateadas
+library(mgcv) # estimar gam
+library(gam)
+library(reshape2) # melt
+library(janitor) # Clean names
+library(magrittr) # Pipe operators
+library(skimr) # Beautiful Summarize
+library(corrplot) # Para correlaciones
+library(PerformanceAnalytics)
+```
+
+
+# Limpieza de datos
+
+Cambiamos el nombre de las columnas para que todas ellas estén en minúsculas, se eliminan las filas con valores nulos y las columnas con variables que no necesitaremos y se comprueba que no haya duplicados. El resultado sería el siguiente:
+
+```{r data visualization, include = FALSE}
+data_pisa <- read_csv("pisasci2006.csv")
+colnames(data_pisa)
+
+data_pisa %<>% clean_names() # Esto es de la libreria janitor y te pone bien los nombres
+colnames(data_pisa)
+
+```
+
+
+```{r Dat Wranling}
+
+# delete duplicate
+# Remove duplicate rows of the dataframe
+data_pisa %<>% distinct(country,.keep_all = TRUE)
+
+# delete rows with NA's 
+data_pisa <- data_pisa %>%
+  drop_na()
+
+
+data_pisa = subset(data_pisa, select = -c(issues, explain, evidence))
+
+head(data_pisa)
+```
+
+# Summary
+Visualizamos un resumen de los estadísticos más relevantes. Podemos observar que ninguna variable sigue una aparente distribución normal, excepto "support".
+
+```{r}
+skim(data_pisa) # edu se parece a una normal, pero no mucho.
+```
+
+# Correlación
+
+Para observar la relación que hay entre las variables realizamos ggplots de la variable overall y las independientes. Para que se pueda estudiar de manera más clara, añadimos logaritmos a la variable dependiente.
+
+```{r}
+ggplot(data = data_pisa, mapping = aes(x = interest , y = log(overall))) +
+  layer(geom = "point",stat = "identity",position = "identity") +
+  theme_bw() + theme(legend.key = element_blank())
+
+ggplot(data = data_pisa, mapping = aes(x = support , y = log(overall))) +
+  layer(geom = "point",stat = "identity",position = "identity") +
+  theme_bw() + theme(legend.key = element_blank())
+
+ggplot(data = data_pisa, mapping = aes(x = income , y = log(overall))) +
+  layer(geom = "point",stat = "identity",position = "identity") +
+  theme_bw() + theme(legend.key = element_blank())
+
+ggplot(data = data_pisa, mapping = aes(x = health , y = log(overall))) +
+  layer(geom = "point",stat = "identity",position = "identity") +
+  theme_bw() + theme(legend.key = element_blank())
+
+ggplot(data = data_pisa, mapping = aes(x = edu , y = log(overall))) +
+  layer(geom = "point",stat = "identity",position = "identity") +
+  theme_bw() + theme(legend.key = element_blank())
+
+ggplot(data = data_pisa, mapping = aes(x = hdi , y = log(overall))) +
+  layer(geom = "point",stat = "identity",position = "identity") +
+  theme_bw() + theme(legend.key = element_blank())
+
+```
+
+Todas las variables tienen una relación positiva lineal con la variable dependiente excepto interest y support cuya relación es negativa. Además, aparentemente, no existe una clara correlación con la variable support, lo que nos lleva a pensar que support no explique mucho de Overall.
+
+Para asegurarnos de ello realizamos la matriz de correlaciones. De aquí nos interesa fijarnos en la primera línea, donde, como comentado anteriormente, la variable menos correlacionada es support.
+
+
+```{r}
+categorical <- c("country")
+
+corrplot(cor(data_pisa %>% 
+               select_at(vars(-categorical)), 
+             use = "complete.obs"), 
+         method = "circle",type = "upper")
+
+```
+
+En el siguiente gráfico podemos ver la distribución de cada variable en la diagonal. Por debajo: diagramas de dispersión por pares con línea de ajuste. Por encima: el valor del coef de corr con el nds como estrellas: p-valores(0, 0.001, 0.01, 0.05, 0.1, 1) con símbolos("***", "**", "*", ".", " ") respectivamente.
+```{r}
+chart.Correlation(data_pisa%>%
+                  select_at(vars(-categorical)),
+               histogram=TRUE, pch=19)
+```
+
+
+# Generación de splines
+
+A continuacióon utilizamos la función smooth.spline a cada variable, para obtener los splines suavizados de cada uno utilizando el método de cross-validation.
+
+```{r}
+# smooth spline con cv:
+
+# Saco los grados de libertad de cada variable junto con el CV. 
+# Solo los calculo para las variables que no son categoricas ni dumbies.
+
+smooth_interest <- smooth.spline(data_pisa$interest, data_pisa$overall, cv = TRUE)
+smooth_interest
+
+smooth_support <- smooth.spline(data_pisa$support, data_pisa$overall, cv = TRUE)
+smooth_support
+
+smooth_income <- smooth.spline(data_pisa$income, data_pisa$overall, cv = TRUE)
+smooth_income
+
+smooth_Health <- smooth.spline(data_pisa$health, data_pisa$overall ,cv = TRUE)
+smooth_Health
+
+smooth_edu <- smooth.spline(data_pisa$edu, data_pisa$overall ,cv = TRUE)
+smooth_edu
+
+smooth_hdi <- smooth.spline(data_pisa$hdi, data_pisa$overall ,cv = TRUE)
+smooth_hdi
+```
+
+
+La siguiente gráfico compara el uso de los grados de libertad que he impuesto (10) (línea rosa), y los grados de libertad generados por los splines suavizados a través de cross-validation (línea verde).
+
+```{r}
+# comparamos edu con 10 grados de libertad con splines suavizados mediante CV.
+plot(data_pisa$edu, data_pisa$overall, col='black')
+
+df_impuestos <- smooth.spline(data_pisa$edu, data_pisa$overall, df=10)
+df_smooth <- smooth.spline(data_pisa$edu, data_pisa$overall, cv=TRUE)
+
+lines(df_impuestos, col='pink', lwd = 2)
+lines(df_smooth, col='green')
+```
+
+
+# MODELOS ADITIVOS GENERALIZADOS (GAM)
+
+Lo siguiente es generar un modelo GAM con los grados de libertad obtenidos anteriormente.
+
+```{r, echo = TRUE}
+# the s() function is used to indicate a smoothing spline.
+gam1 <- gam(overall ~ s(interest, df=4.726395) + s(support, df=2.000681) + s(income, df=10.38038) + s(health, df=2.003068)+ s(edu, df=4.331208)+ s(hdi, df=2.003388), data = data_pisa )
+
+plot(gam1, se = TRUE, col = 'green')
+
+```
+```{r}
+summary(gam1)
+```
+
+Ya que el objetivo de suavizar splines que encontrar una función que haga que el RSS sea razonablemente pequeño, pero que también sea fluido, observamos los RSS generados con smooth.spline() y generamos un nuevo modelo GAM en el que no están suavizadas aquellas variables que tenían menor RSS.
+
+```{r, echo = TRUE}
+
+# Las dos que son significativas en el modelo de antes ahora le quitas el suavizado
+gam2 <- gam(overall ~ interest + s(support, df=2.001243) + income + s(health, df=2.002844)+ s(edu, df=2.002385)+ hdi, data = data_pisa )
+
+plot(gam2, se = TRUE, col = 'green')
+```
+
+
+
+```{r}
+summary(gam2)
+```
+Por último, generamos otro modelo gam sin suavizar ningún splin.
+
+```{r, echo = TRUE}
+gam3 <- gam(overall ~ interest + support + income + health + edu + hdi, data = data_pisa )
+
+plot(gam3, se = TRUE, col = 'green')
+```
+
+```{r}
+summary(gam3)
+```
+# ANOVA
+Para finalizar, utilizamos ANOVA para evaluar cuál es el mejor modelo.
+
+ESTO ESTÁ MAL!!!!: Atendiendo al RSS, el mejor modelo es gam1, ya que el número de residuos es mucho menor que los otros dos modelos.
+
+El objetivo es que tenga poco RSS pero que sea significativo, then gam2 es mejor.
+
+```{r}
+anova(gam1, gam2, gam3)
+```
+

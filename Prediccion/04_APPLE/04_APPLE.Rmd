@@ -1,0 +1,198 @@
+---
+title: "Ventas Apple"
+author: "Sara Bengoechea Rodriguez"
+date: "11/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Introducción
+
+El presente informe tiene como objetivo predecir las ventas de Apple para el año 2017 y 2018, a partir de los datos disponibles desde el segundo trimestre de 2008 hasta el cuarto trimestre de 2016 mediante un modelo ETS y un modelo ARIMA.
+
+Para comenzar, se deben cargar las librerías necesarias e importar la base de datos IngresosApple.csv de Bloomberg. Para poder trabajar con ella y generar los datos por trimestre, se deben transformar a XTS y posteriormente a zoo para poder realizar forecasting sobre ella.
+
+```{r data import and libraries, include = FALSE}
+require(forecast) # for forecasting
+require(xts) # To transform to xts format
+require(ggplot2)
+library(ggfortify) #Plot Monthplot
+data <- read.csv("IngresosApple.csv", sep = ";", dec = ".") 
+```
+
+```{r, include= FALSE}
+
+rawDate <- seq(as.Date("2008/04/01"), as.Date("2017/09/30"), by = "quarter") # Para que entienda que son trimestres
+
+Sales_A <- data$Ingresos # Creamos un objeto con los ingresos (type int)
+
+
+#Creamos un objeto XTS
+x_Sales <- xts(Sales_A, order.by = rawDate)
+x_Sales <- to.quarterly(x_Sales) # Asi son datos trimestrales
+
+# #Transform to zoo data (forecast package) (lo mismo pero es un vector con la tabla )
+z_Sales <- as.zoo(x_Sales$x_Sales.Open)
+head(z_Sales)
+names(z_Sales) <- "Ingresos" # Cambiamos el nombre de la columna para que se llame Ingresos
+
+```
+
+Con la información disponible, los ingresos por trimestre se representarían de la siguiente manera:
+
+```{r}
+##Plot Serie
+autoplot(z_Sales) + ggtitle("Ventas Trimestrales Apple") + xlab("Trimestre") + ylab("Ingresos")
+```
+
+## MODELO ETS
+
+Antes de elaborar el modelo ETS debemos eliminar del training set las observaciones pertenecientes a los trimestres de 2017, y a continuación, seleccionamos de manera automática el modelo ETS mediante la función ets().
+
+
+```{r}
+#Select number of observation to compare forecast
+cOmit = 3
+
+#Data Size
+nObs = length(z_Sales)
+
+#sub_sample
+#oVentas=z_Sales[1:(nObs-cOmit),]
+o_Sales <- window(z_Sales,start = index(z_Sales[1]),end = index(z_Sales[nObs-cOmit]))
+
+```
+
+```{r, include = FALSE}
+length(o_Sales) # o_Sales es el subsample (35 obs) hasta 2016 Q4 
+tail(o_Sales)
+length(z_Sales) # z_Sales es todo el dataset (38 obs)
+```
+
+El siguiente summary muestra los aspectos más relevantes del mejor modelo ETS escogido de manera automática.
+
+```{r}
+## Select automatic ETS
+etsfit <- ets(o_Sales) # fitted ETS Model o_Sales (submuestra)
+summary(etsfit)
+```
+
+El siguiente paso sería realizar predicciones con la función forecast() para el modelo seleccionado. Debajo se muestra el summary y una tabla con los intervalos de predicción. La manera de interpretarlo sería la siguiente: Hay un 80% de probabilidades de que las ventas de Apple para el primer cuatrimestre del 2017 estén entre 58568.387(lower bound) y 80311.27(higher bound); y de igual interpretación para una probabilidad del 95% con sus valores correspondinetes de la tabla.
+
+```{r}
+#forecast model
+f_Sales.ets = forecast(etsfit) # Predice desde el final de la submuestra para los 8 next quarters
+#Results
+summary(f_Sales.ets)
+```
+
+La predicción del modelo ETS se puede representar mediante en el gráfico inferior.
+
+```{r, include = FALSE}
+#Plot (1a manera de hacerlo)
+plot(f_Sales.ets)
+lines(window(z_Sales),type="o")
+```
+
+```{r}
+# Este gráfico sí lo incluyo que se ve mejor
+df_new <- data.frame(value = as.vector(z_Sales),
+                     time = time(z_Sales))
+ggplot(df_new)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ geom_forecast(f_Sales.ets,alpha=0.4)+ggtitle("ETS: Predicción Apple")
+```
+
+Para poder comparar entre la estimación y las ventas reales podemos observar la siguiente matriz:
+
+```{r}
+matrix(c(f_Sales.ets$mean[1:cOmit],z_Sales[(nObs-cOmit+1):nObs]),ncol=2) # primer col es prediccion 2a actual
+```
+Se puede ver cómo para el primer trimestre de 2017, la estimación está por debajo, para el segundo trimestre se acerca bastante al valor real, y cómo para el tercer trimestre, la predicción se encuentra por encima.
+
+El estudio de la precisión del modelo se realizará observando los errores.
+
+```{r}
+# Predicciones y precisión
+ts_Sales=ts(coredata(z_Sales), start = c(2008, 1), frequency = 4) # The function ts is used to create time-series objects.
+
+# coredata Generic functions for extracting the core data contained in a (more complex) object and replacing it.
+
+etsfit<-ets(window(ts_Sales,end=2016+3/4))
+f_Sales.ets=forecast(etsfit,h=cOmit)
+
+#accuracy(etsfit,window(ts_Sales,start=2017))
+forecast:::testaccuracy(f_Sales.ets$mean,window(ts_Sales,start=2017),test = NULL, d = NULL, D = NULL)
+
+# We obtain: mean error (ME), root mean squared error (RMSE), mean absolute error (MAE), mean percentage error (MPE), mean absolute percentage error (MAPE), mean absolute scaled error (MASE) and the first-order autocorrelation coefficient (ACF1)
+
+```
+
+## Modelo ARIMA
+
+De igual manera, que realizamos anteriormente el modelo ETS, llevamos a cabo el modelo ARIMA pero con la función auto.arima(), que seleccionará de manera automática el mejor modelo:
+
+```{r}
+#ARIMA MODEL
+arimafit=auto.arima(o_Sales,lambda=0)
+summary(arimafit)
+```
+
+
+Realizamos la predicción con la función forecast() y se obtiene el summary de dicha predicción. Como en el modelo ETS, también se muestra la tabla con los intervalos de predicción que se interpretan de igual manera.
+
+```{r}
+f_Sales.arima=forecast(arimafit)
+
+summary(f_Sales.arima)
+```
+
+
+La predicción del modelo ARIMA se puede representar mediante el gráfico inferior.
+
+```{r}
+df_new <- data.frame(value = as.vector(z_Sales),
+                     time = time(z_Sales))
+
+ggplot(df_new)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ geom_forecast(f_Sales.arima,alpha=0.4)+ggtitle("ARIMA: Predicción Apple")
+
+```
+
+Para poder comparar entre la estimación de ventas del modelo ARIMA y las ventas reales podemos observar la siguiente matriz:
+
+```{r}
+matrix(c(f_Sales.arima$mean[1:cOmit],z_Sales[(nObs-cOmit+1):nObs]),ncol=2)
+```
+Tanto por la matriz, como por el gráfico, podemos ver que la predicción está por debajo de las ventas actuales.
+
+Para estudiar la precisión del modelo se debe atender a los errores mostrados a continuación:
+
+```{r}
+# Predicciones y precisión
+ts_Sales=ts(coredata(z_Sales), start = c(2008, 1), frequency = 4) # coredata Generic functions for extracting the core data contained in a (more complex) object and replacing it.
+arimafit<-arima(window(ts_Sales,end=2016+3/4))
+f_Sales.arima=forecast(arimafit,h=cOmit)
+
+#accuracy(etsfit,window(ts_Sales,start=2017))
+forecast:::testaccuracy(f_Sales.arima$mean,window(ts_Sales,start=2017),test = NULL, d = NULL, D = NULL)
+
+# We obtain: mean error (ME), root mean squared error (RMSE), mean absolute error (MAE), mean percentage error (MPE), mean absolute percentage error (MAPE), mean absolute scaled error (MASE) and the first-order autocorrelation coefficient (ACF1)
+```
+```{r}
+cbind(f_Sales.arima$mean,f_Sales.ets$mean)
+```
+
+
+## Conclusión
+
+Para comparar entre modelos, observamos los errores, como se ha comentado anteriormente. Atendiendo al RMSE o al MAPE podemos ver cómo es mejor el modelo ets, ya que su error es menor.
+
+
+
+
+
+
+
+
+

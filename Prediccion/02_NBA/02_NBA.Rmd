@@ -1,0 +1,192 @@
+---
+title: "NBA_02"
+author: "Sara Bengoechea Rodriguez"
+date: "11/5/2020"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+  html_notebook:
+    highlight: kate
+    toc: yes
+    toc_depth: 2
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r Libraries and functions, message=FALSE, warning=FALSE}
+# Importación de librerías
+library(rsample)  # data splitting 
+library(glmnet)   # implementing regularized regression approaches
+library(dplyr)    # basic data manipulation procedures
+library(ggplot2)  # plotting
+library(janitor) # Clean names
+library(magrittr) # Pipe operators
+library(skimr) # Beautiful Summarize
+library(here) # Coment
+library(tidyverse)
+library(magrittr) # Pipe operators
+library(corrplot) # Correlations
+library(ggcorrplot)  # Correlations
+library(PerformanceAnalytics) # Correlations
+library(leaps) # Model selection
+
+```
+
+# Limpieza de datos
+
+Se eliminan las filas duplicadas y con valores nulos, las columnas con variables categóricas (país y equipo) y se ponen todos los nombres de las columnas en minúscula. El resultado sería el siguiente:
+
+```{r read data, include = FALSE}
+raw_data <-  read.csv("nba.csv")
+colnames(raw_data)
+raw_data %<>% clean_names() # Esto es de la libreria janitor y te pone bien los nombres
+colnames(raw_data)
+```
+
+```{r Data Wranling, include= FALSE}
+
+# delete duplicates
+# Remove duplicate rows of the dataframe
+raw_data %<>% distinct(player,.keep_all = TRUE)
+
+# delete NA's
+raw_data %<>% drop_na()
+
+# Delete categorical variables 
+raw_data$nba_country <- NULL
+raw_data$tm <- NULL
+colnames(raw_data) # Check the change has been made
+
+```
+
+```{r}
+head(raw_data)
+```
+# Summary
+Visualizamos un resumen de los estadísticos más relevantes. 
+
+Es destacable que el histograma del salario no sigue una distribución normal, por lo que puede ser conflictivo para predecir.
+
+```{r}
+# Summarise
+skim(raw_data)
+```
+
+# División en training y testing set
+
+El dataset se divide en el 70% de las líneas (training set) y el 30% restante (test set).
+
+```{r}
+set.seed(1234)
+nba_split <- initial_split(raw_data, prop = .7, strata = "salary") # Esto es para dividir entre el 70 y 30 por ciento
+nba_train <- training(nba_split) # Creamos training dataset
+nba_test  <- testing(nba_split) # Creamos test dataset
+```
+
+# Training and testing feature model matrices and response vectors
+
+Creamos las feature model matrices and response vectors. El siguiente output muestra la dimensión de dicha matriz.
+```{r}
+nba_train_x <- model.matrix(salary ~ ., nba_train)[, -1] # matriz del modelo para el training set
+nba_train_y <- log(nba_train$salary) # log del salario para training set
+
+nba_test_x <- model.matrix(salary ~ ., nba_test)[, -1] # matriz del modelo para el test set
+nba_test_y <- log(nba_test$salary) # log del salario para training set
+
+# What is the dimension of of your feature matrix?
+dim(nba_train_x)
+
+```
+
+# Regresiones
+
+Realizamos la Regresión Lasso (alfa igual 1) Ridge (alfa igual a 0) y Elástica, para los valores de 0.25 y 0.75 de alfa. Los gráficos que se muestran explican cómo, a medida que aumenta lambda, los coeficientes se acercan más a cero.
+
+
+```{r}
+# glmnet is a package that fits a generalized linear model via penalized maximum likelihood
+lasso    <- glmnet(nba_train_x, nba_train_y, alpha = 1.0) # Regresion Lasso
+elastic1 <- glmnet(nba_train_x, nba_train_y, alpha = 0.25) # Regresion elastic con alpha = 0.25
+elastic2 <- glmnet(nba_train_x, nba_train_y, alpha = 0.75) # Regresion elastic con alpha = 0.75
+ridge <- glmnet(nba_train_x, nba_train_y, alpha = 0.0) # Regression Ridge
+
+par(mfrow = c(2, 2), mar = c(6, 4, 6, 2) + 0.1)
+plot(lasso, xvar = "lambda", main = "Lasso (Alpha = 1)\n\n\n")
+plot(elastic1, xvar = "lambda", main = "Elastic Net (Alpha = .25)\n\n\n")
+plot(elastic2, xvar = "lambda", main = "Elastic Net (Alpha = .75)\n\n\n")
+plot(ridge, xvar = "lambda", main = "Ridge (Alpha = 0)\n\n\n")
+```
+
+```{r, include= FALSE}
+# maintain the same folds across all models
+fold_id <- sample(1:10, size = length(nba_train_y), replace = TRUE)  
+
+# search across a range of alphas
+tuning_grid <- tibble::tibble(
+  alpha      = seq(0, 1, by = .1),
+  mse_min    = NA,
+  mse_1se    = NA,
+  lambda_min = NA,
+  lambda_1se = NA
+)
+tuning_grid
+```
+
+Se realiza un ajuste del modelo mediante cross validation para cada alfa y se extrae MSE y los valores de lambda, que queda representado en la siguient tabla:
+
+```{r}
+for (i in seq_along(tuning_grid$alpha)) {
+  
+  # fit CV model for each alpha value
+  fit <- cv.glmnet(nba_train_x, nba_train_y, alpha = tuning_grid$alpha[i], foldid = fold_id)
+  
+  # extract MSE and lambda values
+  tuning_grid$mse_min[i]    <- fit$cvm[fit$lambda == fit$lambda.min]
+  tuning_grid$mse_1se[i]    <- fit$cvm[fit$lambda == fit$lambda.1se]
+  tuning_grid$lambda_min[i] <- fit$lambda.min
+  tuning_grid$lambda_1se[i] <- fit$lambda.1se
+}
+
+tuning_grid
+```
+ 
+Su representación gráfica sería como se muestra a continuación.
+
+```{r}
+tuning_grid %>%
+  mutate(se = mse_1se - mse_min) %>%
+  ggplot(aes(alpha, mse_min)) +
+  geom_line(size = 2) +
+  geom_ribbon(aes(ymax = mse_min + se, ymin = mse_min - se), alpha = .25) +
+  ggtitle("MSE ± one standard error")
+
+```
+
+# Mejor modelo y predicción
+
+Si observamos la gráfica anterior y la tabla con los MSE para cada valor de alfa, observamos que el mínimo ocurre cuando alfa es igual a 1, como el modelos lasso. Su mínimo MSE sería el que se muestra a continuación.
+
+```{r}
+cv_lasso <- cv.glmnet(nba_train_x, nba_train_y, alpha = 1.0)
+min(cv_lasso$cvm) # minimum MSE
+```
+
+Con dicha predicción se obtendría el siguiente resultado:
+
+```{r}
+pred <- predict(cv_lasso, s = cv_lasso$lambda.min, nba_test_x)
+mean((nba_test_y - pred)^2)
+```
+
+
+
+
+
+
+

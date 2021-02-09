@@ -1,0 +1,251 @@
+---
+title: "BMW VS VOLSKWAGEN: GARCH y VAR"
+author: "Sara Bengoechea Rodríguez"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r, include = FALSE}
+library("quantmod") #Package to download financials historical data 
+library("forecast")
+library("fGarch")
+library(vars)
+```
+
+```{r}
+#funciones
+archTest <- function(rtn,m=10){
+  # Perform Lagrange Multiplier Test for ARCH effect of a time series
+  # rtn: time series
+  # m: selected AR order
+  # TSAY(2013)
+  y=(rtn-mean(rtn))^2
+  T=length(rtn)
+  atsq=y[(m+1):T]
+  x=matrix(0,(T-m),m)
+  for (i in 1:m){
+    x[,i]=y[(m+1-i):(T-i)]
+  }
+  md=lm(atsq~x)
+  summary(md)
+}
+
+```
+
+# MODELO GARCH
+
+Para comenzar, importamos los datos de los rendimientos de BMW de la librería Quantmod desde 2014 hasta el fin de Noviembre de 2020.
+
+```{r, include=FALSE}
+#Yahoo ticker (stock or index) 
+sSymbol="BMW.DE"
+
+#get data from yahoo
+mData<-getSymbols(sSymbol ,from="2014-01-01",to="2020-11-30",auto.assign=FALSE)
+#Define workdata
+xData=Ad(mData)
+```
+
+Obtenemos los rendimientos diarios y, mediante los siguientes gráficos, observamos la evolución del precio, de la rentabilidad y de la volatilidad a lo largo de los años:
+```{r, include=FALSE}
+# Calculamos los rendimientos diarios
+dRentCont=dailyReturn(xData,type='log',leading=FALSE)
+#Quitamos el primer NA
+dRentCont=na.exclude(dRentCont)
+
+plot.zoo(cbind(xData,dRentCont),main=paste(sSymbol," y  Rentabilidad"),xlab="años",ylab=c("Precio","rentabilidad"))
+grid(lwd=2)
+```
+
+```{r}
+#Volatilidad GARCH
+#Plot return squared
+plot.zoo(cbind(Ad(mData),dRentCont,dRentCont^2),main=paste(sSymbol," y  Rentabilidad"),xlab="años",ylab=c("Precio","rentabilidad","Volatilidad"))
+```
+
+
+Realizamos un t.test de los rendimientos diarios para la media donde obtenemos un p-valor grande, por lo que aceptamos la hipótesis nula, significando que la verdadera media es igual a cero.
+
+
+```{r}
+#testing mean
+t.test(dRentCont)
+```
+
+Para la identificación y diagnosis del modelo GARCH realizamos ACF y PACF de los rendimientos al cuadrado. Podemos ver que no se trata de ruido blanco mediante los gráficos ACF Y PACF y con el test de Ljung-Box.
+
+```{r}
+#ACF & PACF 
+# VolProxy=abs(dRentCont) # absolute value
+VolProxy=dRentCont^2 # Obtenemos las rentabilidades al cuadrado para poder realizar ACF y PACF
+# Tbn se puede con valor absoluto
+
+#ACF y PACF
+tsdisplay(VolProxy)
+
+#Ljung-Box Test 
+Box.test(VolProxy,lag=10,  type="Lj")
+Box.test(VolProxy,lag=20,  type="Lj")
+Box.test(VolProxy,lag=40,  type="Lj")
+```
+
+Test de Multiplicadores de Langrage de Engle (LM). 
+
+En este test, la hipótesis nula es de no GARCH. Dado el valor tan cercano a cero del p-valor, rechazamos la hipótesis nula y concluimos que podemos realizar un modelo de GARCH para el caso de BMW.
+
+```{r}
+#LM test
+archTest(dRentCont,20)
+```
+
+Ajustamos el modelo de ARCH(1). Su BIC es de -5.278798.
+
+```{r}
+#ARCH(1)
+m1=garchFit(~1+garch(1,0),data=dRentCont,trace=F) # Fit an ARCH(1) model
+summary(m1)
+resi=residuals(m1,standardize=T) #residuals (los estandarizas)
+resi=xts(resi,order.by=index(dRentCont)) #residuals as xts
+tsdisplay(resi^2) #acf pacf residuals 
+
+```
+
+Ajustamos el modelo de GARCH(1,1). Su BIC es de -5.471159, menor que el del ARCH(1), por lo que es un modelo más adecuado que el anterior.
+
+```{r, warning=FALSE}
+#GARCH(1,1)
+m2=garchFit(~1+garch(1,1),data=dRentCont,trace=F) # Fit an GARCH(1,1) model
+summary(m2)
+
+
+```
+Analizamos el error del modelo GARCH(1,1) y vemos que no es un caso de ruido blanco.
+
+```{r}
+resi=residuals(m2,standardize=T) #residuals
+resi=xts(resi,order.by=index(dRentCont)) #residuals as xts
+tsdisplay(resi^2) #acf pacf residuals 
+```
+
+```{r}
+
+# plot(m2)
+
+```
+
+Procedemos a realizar un modelo garch con conditional distribution. El BIC es de -5.549017, y se trata del menor BIC, por lo que el modelo final será este.
+
+```{r, warning=FALSE}
+#t-student
+m3<- garchFit(~1+garch(1,1),data=dRentCont,trace=F,cond.dist="std") # POR QUÉEEE HAY QUE PONER LO DE STD (STADARD )
+summary(m3)
+# plot(m3)
+```
+Obtenemos la volatilidad de nuestro modelo final que sigue el siguiente gráfico. Se puede observar cómo aumenta la volatilidad en 2020 debido al coronavirus, ya que el sector automovilístico fue uno de los más afectados.
+
+```{r}
+v1=volatility(m3)  # Obtain volatility del modelo m3
+v1=xts(v1,order.by=index(dRentCont)) #  volatility as XTS
+plot(sqrt(252)*v1)
+```
+
+Estudiamos los errores del modelo y vemos que tampoco son ruido blanco.
+
+```{r}
+resi=residuals(m3,standardize=T) # Standardized residuals
+resi=xts(resi,order.by=index(dRentCont)) # Standardized residuals as XTS
+tsdisplay(resi^2) #acf pacf residuals
+plot(resi)
+```
+
+Realizamos la predicción de nuestro mejor modelo. 
+El siguiente es la predicción para el modelo GARCH para 10 lags con un valor crítico de 2.
+
+```{r}
+predict(m3) #forecast volatility
+predict(m3, n.ahead = 10, plot=TRUE, crit_val=2) #plot with 2*standard error. 10 lags. POR QUÉ CRITICAL VALUE= 2???
+```
+
+La predicción del modelo GARCH para 20 lags, una confianza del 90% y de 100 observaciones sería como de la siguiente manera
+
+```{r}
+predict(m3,n.ahead=20,plot=TRUE,conf=.9,nx=100) # plot 100 data with 90% confidence. 20 lags
+#nx = 100 The number of observations to be plotted along with the predictions.
+
+```
+
+# MODELO VAR
+
+Para comenzar importamos los datos de BMW y Volskwagen de la librería quantmod, obtenemos los rendimientos mensuales de ambos activos, generamos vectores de estos y eliminamos los valores nulos.
+
+```{r, warning=FALSE}
+## Leer datos
+bmw=getSymbols("bmw.DE",env=NULL)
+vlk=getSymbols("VOW.DE",env=NULL)
+# Generar rentabilidad mensual
+rbmw=monthlyReturn(bmw[,6])
+rvlk=monthlyReturn(vlk[,6])
+```
+
+
+```{r}
+#generar vector
+vY=cbind(rbmw,rvlk) # vector con rendimientos de ambos activos
+colnames(vY)=c("bmw","vlk") # Cambiamos el nombre de las columnas
+vY=na.omit(vY) # eliminamos nas
+```
+
+Mediante la función VARselect() seleccionamos el mejor modelo según el AIC,  HQ,  SC y FPE. Atendiendo al AIC y FPE, el mejor modelo es de 10 retardos y al HQ y SC es de un solo retardo.
+
+```{r}
+#Seleccionar modelo
+VARselect(vY) # Te dice cuál es el mejor modelo, según el número de lags creo
+```
+
+Estimamos el modelo con la función VAR y obtenemos los siguientes resultados. En la matriz de correlaciones podemos observar una correlación de los activos de 0.2996.
+
+```{r}
+#estimar
+model.var = VAR(vY)
+summary(model.var)
+```
+Ajustamos de nuevo el modelo VAR pero esta vez no incluimos los regresores determinísticos (type = "none"). En este caso la correlación es de 0.2998, ligeramente superior.
+
+```{r}
+model.var1=VAR(vY,type="none") # Type of deterministic regressors to include.
+summary(model.var1)
+```
+
+Estudiamos la causalidad de Granger y vemos que no hay causalidad instantanea entre BMW y Voslkwagen.
+
+```{r, warning=FALSE}
+#causalidad de granger
+causality(model.var1)
+```
+
+Los coeficientes de respuesta al impulso son los siguientes:
+
+```{r}
+#respuesta al impulso
+model.ri=irf(model.var1)
+model.ri
+
+# plot(model.ri)
+```
+
+Para el modelo VAR se lleva a cabo la siguiente predicción para 10 lags y ci = 0.95.
+
+```{r}
+##prediccion
+predict(model.var1, n.ahead = 10, ci = 0.95) 
+```
+
+
+
+
